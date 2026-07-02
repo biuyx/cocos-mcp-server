@@ -30,6 +30,7 @@ interface ServerSettings {
     autoStart: boolean;
     debugLog: boolean;
     maxConnections: number;
+    authToken: string;
 }
 
 module.exports = Editor.Panel.define({
@@ -67,7 +68,8 @@ module.exports = Editor.Panel.define({
                         port: 3000,
                         autoStart: false,
                         debugLog: false,
-                        maxConnections: 10
+                        maxConnections: 10,
+                        authToken: ''
                     });
                     
                     const availableTools = ref<ToolConfig[]>([]);
@@ -107,7 +109,8 @@ module.exports = Editor.Panel.define({
                                     port: settings.value.port,
                                     autoStart: settings.value.autoStart,
                                     enableDebugLog: settings.value.debugLog,
-                                    maxConnections: settings.value.maxConnections
+                                    maxConnections: settings.value.maxConnections,
+                                    authToken: settings.value.authToken
                                 };
                                 await Editor.Message.request('cocos-mcp-server', 'update-settings', currentSettings);
                                 await Editor.Message.request('cocos-mcp-server', 'start-server');
@@ -124,8 +127,9 @@ module.exports = Editor.Panel.define({
                             const settingsData = {
                                 port: settings.value.port,
                                 autoStart: settings.value.autoStart,
-                                debugLog: settings.value.debugLog,
-                                maxConnections: settings.value.maxConnections
+                                enableDebugLog: settings.value.debugLog,
+                                maxConnections: settings.value.maxConnections,
+                                authToken: settings.value.authToken
                             };
                             
                             const result = await Editor.Message.request('cocos-mcp-server', 'update-settings', settingsData);
@@ -303,7 +307,8 @@ module.exports = Editor.Panel.define({
                                     port: serverStatus.settings.port || 3000,
                                     autoStart: serverStatus.settings.autoStart || false,
                                     debugLog: serverStatus.settings.enableDebugLog || false,
-                                    maxConnections: serverStatus.settings.maxConnections || 10
+                                    maxConnections: serverStatus.settings.maxConnections || 10,
+                                    authToken: serverStatus.settings.authToken || ''
                                 };
                                 console.log('[Vue App] Server settings loaded from status:', serverStatus.settings);
                             } else if (serverStatus && serverStatus.port) {

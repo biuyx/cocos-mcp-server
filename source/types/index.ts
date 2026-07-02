@@ -4,6 +4,9 @@ export interface MCPServerSettings {
     enableDebugLog: boolean;
     allowedOrigins: string[];
     maxConnections: number;
+    /** Optional bearer token. When non-empty, /mcp and /api/* require
+     *  `Authorization: Bearer <token>`. Empty string disables auth. */
+    authToken?: string;
 }
 
 export interface ServerStatus {

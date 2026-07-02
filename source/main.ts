@@ -42,7 +42,7 @@ export const methods: { [key: string]: (...any: any) => any } = {
      */
     async stopServer() {
         if (mcpServer) {
-            mcpServer.stop();
+            await mcpServer.stop();
         } else {
             console.warn('[MCP插件] mcpServer 未初始化');
         }
@@ -65,16 +65,16 @@ export const methods: { [key: string]: (...any: any) => any } = {
      * @en Update server settings
      * @zh 更新服务器设置
      */
-    updateSettings(settings: MCPServerSettings) {
+    async updateSettings(settings: MCPServerSettings) {
         saveSettings(settings);
         if (mcpServer) {
-            mcpServer.stop();
-            mcpServer = new MCPServer(settings);
-            mcpServer.start();
-        } else {
-            mcpServer = new MCPServer(settings);
-            mcpServer.start();
+            await mcpServer.stop(); // release the old port before rebinding
         }
+        mcpServer = new MCPServer(settings);
+        // re-apply the enabled-tools filter to the fresh instance
+        const enabledTools = toolManager.getEnabledTools();
+        mcpServer.updateEnabledTools(enabledTools);
+        await mcpServer.start();
     },
 
     /**

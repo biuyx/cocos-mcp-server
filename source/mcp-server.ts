@@ -163,33 +163,86 @@ export class MCPServer {
         return this.settings;
     }
 
-    private async handleHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-        const parsedUrl = url.parse(req.url || '', true);
-        const pathname = parsedUrl.pathname;
-        
-        // Set CORS headers
-        res.setHeader('Access-Control-Allow-Origin', '*');
+    /** Only accept requests whose Host header resolves to loopback (anti-DNS-rebinding). */
+    private isLocalHost(hostHeader?: string): boolean {
+        if (!hostHeader) return false;
+        const host = hostHeader.replace(/:\d+$/, '').toLowerCase();
+        return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]';
+    }
+
+    /** Non-browser clients send no Origin and are allowed; browser origins must be on the allow-list. */
+    private isOriginAllowed(origin?: string): boolean {
+        const allowed = this.settings.allowedOrigins || ['*'];
+        if (allowed.includes('*')) return true;
+        if (!origin) return true;
+        return allowed.includes(origin);
+    }
+
+    /** Bearer-token gate; disabled when settings.authToken is empty. */
+    private checkAuth(req: http.IncomingMessage): boolean {
+        const token = this.settings.authToken;
+        if (!token) return true;
+        return req.headers['authorization'] === `Bearer ${token}`;
+    }
+
+    private applyCorsHeaders(req: http.IncomingMessage, res: http.ServerResponse): void {
+        const origin = req.headers.origin as string | undefined;
+        if (origin && this.isOriginAllowed(origin)) {
+            res.setHeader('Access-Control-Allow-Origin', origin);
+        } else if ((this.settings.allowedOrigins || ['*']).includes('*')) {
+            res.setHeader('Access-Control-Allow-Origin', '*');
+        }
+        res.setHeader('Vary', 'Origin');
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
         res.setHeader('Content-Type', 'application/json');
-        
+    }
+
+    private async handleHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+        const parsedUrl = url.parse(req.url || '', true);
+        const pathname = parsedUrl.pathname;
+
+        this.applyCorsHeaders(req, res);
+
         if (req.method === 'OPTIONS') {
-            res.writeHead(200);
+            res.writeHead(204);
             res.end();
             return;
         }
-        
+
+        // Reject spoofed Host headers before doing anything else.
+        if (!this.isLocalHost(req.headers.host)) {
+            res.writeHead(403);
+            res.end(JSON.stringify({ error: 'Forbidden: invalid Host header (possible DNS rebinding)' }));
+            return;
+        }
+
+        // /mcp and /api/* carry side effects — gate them on origin + optional token.
+        const isSensitive = pathname === '/mcp' || (pathname?.startsWith('/api/') ?? false);
+        if (isSensitive) {
+            if (!this.isOriginAllowed(req.headers.origin as string | undefined)) {
+                res.writeHead(403);
+                res.end(JSON.stringify({ error: 'Forbidden: origin not allowed' }));
+                return;
+            }
+            if (!this.checkAuth(req)) {
+                res.writeHead(401);
+                res.end(JSON.stringify({ error: 'Unauthorized: missing or invalid bearer token' }));
+                return;
+            }
+        }
+
         try {
             if (pathname === '/mcp' && req.method === 'POST') {
                 await this.handleMCPRequest(req, res);
             } else if (pathname === '/health' && req.method === 'GET') {
                 res.writeHead(200);
                 res.end(JSON.stringify({ status: 'ok', tools: this.toolsList.length }));
-            } else if (pathname?.startsWith('/api/') && req.method === 'POST') {
-                await this.handleSimpleAPIRequest(req, res, pathname);
             } else if (pathname === '/api/tools' && req.method === 'GET') {
                 res.writeHead(200);
                 res.end(JSON.stringify({ tools: this.getSimplifiedToolsList() }));
+            } else if (pathname?.startsWith('/api/') && req.method === 'POST') {
+                await this.handleSimpleAPIRequest(req, res, pathname);
             } else {
                 res.writeHead(404);
                 res.end(JSON.stringify({ error: 'Not found' }));
@@ -226,6 +279,12 @@ export class MCPServer {
                 }
                 
                 const response = await this.handleMessage(message);
+                if (response === null) {
+                    // Notification (no id): JSON-RPC forbids a response body.
+                    res.writeHead(202);
+                    res.end();
+                    return;
+                }
                 res.writeHead(200);
                 res.end(JSON.stringify(response));
             } catch (error: any) {
@@ -243,44 +302,52 @@ export class MCPServer {
         });
     }
 
-    private async handleMessage(message: any): Promise<any> {
+    /** Returns a JSON-RPC response object, or null for notifications (id-less messages). */
+    private async handleMessage(message: any): Promise<any | null> {
         const { id, method, params } = message;
+        const isNotification = id === undefined;
 
         try {
             let result: any;
 
             switch (method) {
-                case 'tools/list':
-                    result = { tools: this.getAvailableTools() };
-                    break;
-                case 'tools/call':
-                    const { name, arguments: args } = params;
-                    const toolResult = await this.executeToolCall(name, args);
-                    result = { content: [{ type: 'text', text: JSON.stringify(toolResult) }] };
-                    break;
                 case 'initialize':
-                    // MCP initialization
                     result = {
-                        protocolVersion: '2024-11-05',
+                        // Echo the client's requested protocol version when present.
+                        protocolVersion: (params && params.protocolVersion) || '2024-11-05',
                         capabilities: {
                             tools: {}
                         },
                         serverInfo: {
                             name: 'cocos-mcp-server',
-                            version: '1.0.0'
+                            version: '1.4.0'
                         }
                     };
                     break;
+                case 'tools/list':
+                    result = { tools: this.getAvailableTools() };
+                    break;
+                case 'tools/call': {
+                    const { name, arguments: args } = params;
+                    const toolResult = await this.executeToolCall(name, args);
+                    result = { content: [{ type: 'text', text: JSON.stringify(toolResult) }] };
+                    break;
+                }
+                case 'ping':
+                    result = {};
+                    break;
+                case 'notifications/initialized':
+                case 'notifications/cancelled':
+                    return null; // known notifications: no response
                 default:
+                    if (isNotification) return null; // ignore unknown notifications silently
                     throw new Error(`Unknown method: ${method}`);
             }
 
-            return {
-                jsonrpc: '2.0',
-                id,
-                result
-            };
+            if (isNotification) return null;
+            return { jsonrpc: '2.0', id, result };
         } catch (error: any) {
+            if (isNotification) return null;
             return {
                 jsonrpc: '2.0',
                 id,
@@ -293,34 +360,30 @@ export class MCPServer {
     }
 
     private fixCommonJsonIssues(jsonStr: string): string {
+        // Conservative only. The previous version globally rewrote single quotes to
+        // double quotes and escaped every control char, which corrupts valid string
+        // content (apostrophes, embedded newlines). Compliant MCP clients send valid
+        // JSON, so we merely strip a BOM and trailing commas as a best-effort fallback.
         let fixed = jsonStr;
-        
-        // Fix common escape character issues
-        fixed = fixed
-            // Fix unescaped quotes in strings
-            .replace(/([^\\])"([^"]*[^\\])"([^,}\]:])/g, '$1\\"$2\\"$3')
-            // Fix unescaped backslashes
-            .replace(/([^\\])\\([^"\\\/bfnrt])/g, '$1\\\\$2')
-            // Fix trailing commas
-            .replace(/,(\s*[}\]])/g, '$1')
-            // Fix single quotes (should be double quotes)
-            .replace(/'/g, '"')
-            // Fix common control characters
-            .replace(/\n/g, '\\n')
-            .replace(/\r/g, '\\r')
-            .replace(/\t/g, '\\t');
-        
+        if (fixed.charCodeAt(0) === 0xFEFF) fixed = fixed.slice(1);
+        fixed = fixed.replace(/,(\s*[}\]])/g, '$1');
         return fixed;
     }
 
-    public stop(): void {
-        if (this.httpServer) {
-            this.httpServer.close();
-            this.httpServer = null;
-            console.log('[MCPServer] HTTP server stopped');
-        }
-
+    public stop(): Promise<void> {
         this.clients.clear();
+        return new Promise<void>((resolve) => {
+            if (this.httpServer) {
+                const srv = this.httpServer;
+                this.httpServer = null; // flip status immediately so a subsequent start() proceeds
+                srv.close(() => {
+                    console.log('[MCPServer] HTTP server stopped');
+                    resolve();
+                });
+            } else {
+                resolve();
+            }
+        });
     }
 
     public getStatus(): ServerStatus {
@@ -417,7 +480,7 @@ export class MCPServer {
         const sampleParams = this.generateSampleParams(schema);
         const jsonString = JSON.stringify(sampleParams, null, 2);
         
-        return `curl -X POST http://127.0.0.1:8585/api/${category}/${toolName} \\
+        return `curl -X POST http://127.0.0.1:${this.settings.port}/api/${category}/${toolName} \\
   -H "Content-Type: application/json" \\
   -d '${jsonString}'`;
     }
@@ -448,11 +511,11 @@ export class MCPServer {
         return sample;
     }
 
-    public updateSettings(settings: MCPServerSettings) {
+    public async updateSettings(settings: MCPServerSettings): Promise<void> {
         this.settings = settings;
         if (this.httpServer) {
-            this.stop();
-            this.start();
+            await this.stop();   // wait for the port to be released before rebinding
+            await this.start();
         }
     }
 }

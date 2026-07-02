@@ -51,6 +51,11 @@
                 <ui-num-input slot="content" v-model="settings.maxConnections" :min="1" :max="100" :step="1">
                 </ui-num-input>
             </ui-prop>
+            <ui-prop>
+                <ui-label slot="label">访问令牌</ui-label>
+                <ui-input slot="content" v-model="settings.authToken" placeholder="留空=不鉴权（本机开放）；填写后 /mcp 需 Bearer 令牌" :disabled="serverRunning">
+                </ui-input>
+            </ui-prop>
         </section>
 
         <section class="server-info" v-if="serverRunning">
