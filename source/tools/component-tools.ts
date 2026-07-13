@@ -1088,6 +1088,20 @@ export class ComponentTools implements ToolExecutor {
     }
 
 
+    /** UUID→Cocos压缩cid(前5个hex不变,余27个hex压成18个base64字符)。与 prefab-tools.uuidToCompressedId 同算法。 */
+    private uuidToCompressedId(uuid: string): string {
+        const BASE64_KEYS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+        const cleanUuid = uuid.replace(/-/g, '').toLowerCase();
+        if (cleanUuid.length !== 32) return uuid;
+        let result = cleanUuid.substring(0, 5);
+        const remainder = cleanUuid.substring(5);
+        for (let i = 0; i < remainder.length; i += 3) {
+            const value = parseInt((remainder[i] || '0') + (remainder[i + 1] || '0') + (remainder[i + 2] || '0'), 16);
+            result += BASE64_KEYS[(value >> 6) & 63] + BASE64_KEYS[value & 63];
+        }
+        return result;
+    }
+
     private async attachScript(nodeUuid: string, scriptPath: string): Promise<ToolResponse> {
         return new Promise(async (resolve) => {
             // 从脚本路径提取组件类名
@@ -1096,10 +1110,18 @@ export class ComponentTools implements ToolExecutor {
                 resolve({ success: false, error: 'Invalid script path' });
                 return;
             }
+            // 修复:getComponents 对脚本组件返回的 type 是压缩UUID(cid)而非明文类名,原验证按类名找永远匹配不上
+            // → 挂载成功却报"was not found on node after addition"假错误。查脚本资产uuid推导cid,类名/cid 都认。
+            let expectedCid = '';
+            try {
+                const assetUuid: any = await Editor.Message.request('asset-db', 'query-uuid', scriptPath);
+                if (assetUuid && typeof assetUuid === 'string') expectedCid = this.uuidToCompressedId(assetUuid);
+            } catch (e) { /* 查不到则只按类名匹配 */ }
+            const matchScript = (comp: any) => comp.type === scriptName || (expectedCid !== '' && comp.type === expectedCid);
             // 先查找节点上是否已存在该脚本组件
             const allComponentsInfo = await this.getComponents(nodeUuid);
             if (allComponentsInfo.success && allComponentsInfo.data?.components) {
-                const existingScript = allComponentsInfo.data.components.find((comp: any) => comp.type === scriptName);
+                const existingScript = allComponentsInfo.data.components.find(matchScript);
                 if (existingScript) {
                     resolve({
                         success: true,
@@ -1123,7 +1145,7 @@ export class ComponentTools implements ToolExecutor {
                 // 重新查询节点信息验证脚本是否真的添加成功
                 const allComponentsInfo2 = await this.getComponents(nodeUuid);
                 if (allComponentsInfo2.success && allComponentsInfo2.data?.components) {
-                    const addedScript = allComponentsInfo2.data.components.find((comp: any) => comp.type === scriptName);
+                    const addedScript = allComponentsInfo2.data.components.find(matchScript);   // 类名/压缩UUID 都认(修假错误)
                     if (addedScript) {
                         resolve({
                             success: true,

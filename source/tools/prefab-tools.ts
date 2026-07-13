@@ -978,34 +978,21 @@ export class PrefabTools implements ToolExecutor {
         }
 
         try {
-            // 使用MCP接口获取节点的组件信息
-            const response = await fetch('http://localhost:8585/mcp', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    "jsonrpc": "2.0",
-                    "method": "tools/call",
-                    "params": {
-                        "name": "component_get_components",
-                        "arguments": {
-                            "nodeUuid": node.uuid
-                        }
-                    },
-                    "id": Date.now()
-                })
-            });
-            
-            const mcpResult = await response.json();
-            if (mcpResult.result?.content?.[0]?.text) {
-                const componentData = JSON.parse(mcpResult.result.content[0].text);
-                if (componentData.success && componentData.data.components) {
-                    // 更新节点的组件信息为MCP返回的正确数据
-                    node.components = componentData.data.components;
-                    console.log(`节点 ${node.uuid} 获取到 ${componentData.data.components.length} 个组件，包含脚本组件的正确类型`);
-                }
+            // 修复:原实现 fetch('http://localhost:8585/mcp') 自调用——端口写死8585(实际可配,常为3000)且不带鉴权头,
+            // 必然失败被吞 → 组件类型退化成 query-node-tree 的明文类名 → prefab 里脚本组件反序列化为 null。
+            // 改为进程内直调 query-node(与 component-tools.getComponents 同源),__comps__ 的 __type__/cid 即压缩UUID。
+            const nodeData: any = await Editor.Message.request('scene', 'query-node', node.uuid);
+            if (nodeData && nodeData.__comps__) {
+                node.components = nodeData.__comps__.map((comp: any) => ({
+                    type: comp.__type__ || comp.cid || comp.type || 'Unknown',
+                    uuid: comp.uuid?.value || comp.uuid || null,
+                    enabled: comp.enabled !== undefined ? comp.enabled : true,
+                    properties: comp.value || {}   // query-node 的 comp.value 与 extractComponentProperties 输出同构({prop:{value}}),下游 componentData.properties.<p>.value 兼容
+                }));
+                console.log(`节点 ${node.uuid} 获取到 ${node.components.length} 个组件(query-node直调,脚本组件为压缩UUID类型)`);
             }
         } catch (error) {
-            console.warn(`获取节点 ${node.uuid} 的MCP组件信息失败:`, error);
+            console.warn(`获取节点 ${node.uuid} 的组件信息失败:`, error);
         }
 
         // 递归处理子节点
@@ -1879,13 +1866,19 @@ export class PrefabTools implements ToolExecutor {
     }): any {
         let componentType = componentData.type || componentData.__type__ || 'cc.Component';
         const enabled = componentData.enabled !== undefined ? componentData.enabled : true;
-        
-        // console.log(`创建组件对象 - 原始类型: ${componentType}`);
-        // console.log('组件完整数据:', JSON.stringify(componentData, null, 2));
-        
-        // 处理脚本组件 - MCP接口已经返回正确的压缩UUID格式
-        if (componentType && !componentType.startsWith('cc.')) {
-            console.log(`使用脚本组件压缩UUID类型: ${componentType}`);
+
+        // 修复兜底:脚本组件若拿到的是明文类名(非 5hex+18base64 的压缩UUID格式),prefab 导入时会反序列化成 null 组件。
+        // 尝试从组件数据里的脚本资产 uuid(__scriptAsset)推导压缩UUID;推不出则告警(产物脚本组件将失效)。
+        if (componentType && !componentType.startsWith('cc.') && !/^[0-9a-f]{5}[0-9A-Za-z+/]{18}$/.test(componentType)) {
+            const scriptUuid = componentData.properties?.__scriptAsset?.value?.uuid
+                || componentData.__scriptAsset?.value?.uuid
+                || componentData.value?.__scriptAsset?.value?.uuid;
+            if (scriptUuid && typeof scriptUuid === 'string') {
+                componentType = this.uuidToCompressedId(scriptUuid);
+                console.log(`脚本组件明文类名已转压缩UUID: ${componentType}`);
+            } else {
+                console.warn(`脚本组件 __type__ 为明文类名(${componentType})且无脚本uuid可推导,prefab 导入后该组件可能为 null`);
+            }
         }
         
         // 基础组件结构
