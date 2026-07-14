@@ -1,0 +1,20 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.fixCommonJsonIssues = fixCommonJsonIssues;
+/**
+ * Best-effort fallback for slightly-malformed JSON before parsing.
+ *
+ * Conservative on purpose (fork hardening): the previous version globally rewrote
+ * single quotes to double quotes and escaped every control char, which corrupts
+ * valid string content (apostrophes, embedded newlines/tabs in string values).
+ * Compliant MCP clients send valid JSON, so we only strip a BOM and trailing
+ * commas — enough to salvage common hand-authored mistakes without mangling data.
+ */
+function fixCommonJsonIssues(jsonStr) {
+    let fixed = jsonStr;
+    if (fixed.charCodeAt(0) === 0xFEFF)
+        fixed = fixed.slice(1); // strip BOM
+    fixed = fixed.replace(/,(\s*[}\]])/g, '$1'); // drop trailing commas
+    return fixed;
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoianNvbi11dGlscy5qcyIsInNvdXJjZVJvb3QiOiIiLCJzb3VyY2VzIjpbIi4uLy4uL3NvdXJjZS91dGlscy9qc29uLXV0aWxzLnRzIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiI7O0FBU0Esa0RBS0M7QUFkRDs7Ozs7Ozs7R0FRRztBQUNILFNBQWdCLG1CQUFtQixDQUFDLE9BQWU7SUFDL0MsSUFBSSxLQUFLLEdBQUcsT0FBTyxDQUFDO0lBQ3BCLElBQUksS0FBSyxDQUFDLFVBQVUsQ0FBQyxDQUFDLENBQUMsS0FBSyxNQUFNO1FBQUUsS0FBSyxHQUFHLEtBQUssQ0FBQyxLQUFLLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxZQUFZO0lBQ3hFLEtBQUssR0FBRyxLQUFLLENBQUMsT0FBTyxDQUFDLGNBQWMsRUFBRSxJQUFJLENBQUMsQ0FBQyxDQUFnQix1QkFBdUI7SUFDbkYsT0FBTyxLQUFLLENBQUM7QUFDakIsQ0FBQyIsInNvdXJjZXNDb250ZW50IjpbIi8qKlxuICogQmVzdC1lZmZvcnQgZmFsbGJhY2sgZm9yIHNsaWdodGx5LW1hbGZvcm1lZCBKU09OIGJlZm9yZSBwYXJzaW5nLlxuICpcbiAqIENvbnNlcnZhdGl2ZSBvbiBwdXJwb3NlIChmb3JrIGhhcmRlbmluZyk6IHRoZSBwcmV2aW91cyB2ZXJzaW9uIGdsb2JhbGx5IHJld3JvdGVcbiAqIHNpbmdsZSBxdW90ZXMgdG8gZG91YmxlIHF1b3RlcyBhbmQgZXNjYXBlZCBldmVyeSBjb250cm9sIGNoYXIsIHdoaWNoIGNvcnJ1cHRzXG4gKiB2YWxpZCBzdHJpbmcgY29udGVudCAoYXBvc3Ryb3BoZXMsIGVtYmVkZGVkIG5ld2xpbmVzL3RhYnMgaW4gc3RyaW5nIHZhbHVlcykuXG4gKiBDb21wbGlhbnQgTUNQIGNsaWVudHMgc2VuZCB2YWxpZCBKU09OLCBzbyB3ZSBvbmx5IHN0cmlwIGEgQk9NIGFuZCB0cmFpbGluZ1xuICogY29tbWFzIOKAlCBlbm91Z2ggdG8gc2FsdmFnZSBjb21tb24gaGFuZC1hdXRob3JlZCBtaXN0YWtlcyB3aXRob3V0IG1hbmdsaW5nIGRhdGEuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBmaXhDb21tb25Kc29uSXNzdWVzKGpzb25TdHI6IHN0cmluZyk6IHN0cmluZyB7XG4gICAgbGV0IGZpeGVkID0ganNvblN0cjtcbiAgICBpZiAoZml4ZWQuY2hhckNvZGVBdCgwKSA9PT0gMHhGRUZGKSBmaXhlZCA9IGZpeGVkLnNsaWNlKDEpOyAvLyBzdHJpcCBCT01cbiAgICBmaXhlZCA9IGZpeGVkLnJlcGxhY2UoLywoXFxzKlt9XFxdXSkvZywgJyQxJyk7ICAgICAgICAgICAgICAgIC8vIGRyb3AgdHJhaWxpbmcgY29tbWFzXG4gICAgcmV0dXJuIGZpeGVkO1xufVxuIl19

@@ -1,7 +1,10 @@
 import * as http from 'http';
 import * as url from 'url';
 import { v4 as uuidv4 } from 'uuid';
-import { MCPServerSettings, ServerStatus, MCPClient, ToolDefinition } from './types';
+import * as path from 'path';
+import * as fs from 'fs';
+import { MCPServerSettings, ServerStatus, ToolDefinition } from './types';
+import { fixCommonJsonIssues } from './utils/json-utils';
 import { SceneTools } from './tools/scene-tools';
 import { NodeTools } from './tools/node-tools';
 import { ComponentTools } from './tools/component-tools';
@@ -11,7 +14,6 @@ import { DebugTools } from './tools/debug-tools';
 import { PreferencesTools } from './tools/preferences-tools';
 import { ServerTools } from './tools/server-tools';
 import { BroadcastTools } from './tools/broadcast-tools';
-import { SceneAdvancedTools } from './tools/scene-advanced-tools';
 import { SceneViewTools } from './tools/scene-view-tools';
 import { ReferenceImageTools } from './tools/reference-image-tools';
 import { AssetAdvancedTools } from './tools/asset-advanced-tools';
@@ -20,7 +22,6 @@ import { ValidationTools } from './tools/validation-tools';
 export class MCPServer {
     private settings: MCPServerSettings;
     private httpServer: http.Server | null = null;
-    private clients: Map<string, MCPClient> = new Map();
     private tools: Record<string, any> = {};
     private toolsList: ToolDefinition[] = [];
     private enabledTools: any[] = []; // 存储启用的工具列表
@@ -28,6 +29,16 @@ export class MCPServer {
     constructor(settings: MCPServerSettings) {
         this.settings = settings;
         this.initializeTools();
+    }
+
+    private getVersion(): string {
+        try {
+            const pkgPath = path.join(__dirname, '..', 'package.json');
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+            return pkg.version || '0.0.0';
+        } catch {
+            return '0.0.0';
+        }
     }
 
     private initializeTools(): void {
@@ -42,7 +53,6 @@ export class MCPServer {
             this.tools.preferences = new PreferencesTools();
             this.tools.server = new ServerTools();
             this.tools.broadcast = new BroadcastTools();
-            this.tools.sceneAdvanced = new SceneAdvancedTools();
             this.tools.sceneView = new SceneViewTools();
             this.tools.referenceImage = new ReferenceImageTools();
             this.tools.assetAdvanced = new AssetAdvancedTools();
@@ -125,15 +135,6 @@ export class MCPServer {
         console.log(`[MCPServer] Setup tools: ${this.toolsList.length} tools available`);
     }
 
-    public getFilteredTools(enabledTools: any[]): ToolDefinition[] {
-        if (!enabledTools || enabledTools.length === 0) {
-            return this.toolsList; // 如果没有过滤配置，返回所有工具
-        }
-
-        const enabledToolNames = new Set(enabledTools.map(tool => `${tool.category}_${tool.name}`));
-        return this.toolsList.filter(tool => enabledToolNames.has(tool.name));
-    }
-
     public async executeToolCall(toolName: string, args: any): Promise<any> {
         const parts = toolName.split('_');
         const category = parts[0];
@@ -146,9 +147,6 @@ export class MCPServer {
         throw new Error(`Tool ${toolName} not found`);
     }
 
-    public getClients(): MCPClient[] {
-        return Array.from(this.clients.values());
-    }
     public getAvailableTools(): ToolDefinition[] {
         return this.toolsList;
     }
@@ -163,14 +161,14 @@ export class MCPServer {
         return this.settings;
     }
 
-    /** Only accept requests whose Host header resolves to loopback (anti-DNS-rebinding). */
+    /** 只接受 Host 头解析到 loopback 的请求（反 DNS-rebinding，fork 加固）。 */
     private isLocalHost(hostHeader?: string): boolean {
         if (!hostHeader) return false;
         const host = hostHeader.replace(/:\d+$/, '').toLowerCase();
         return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]';
     }
 
-    /** Non-browser clients send no Origin and are allowed; browser origins must be on the allow-list. */
+    /** 非浏览器客户端不带 Origin，放行；浏览器 Origin 必须在白名单内（fork 加固）。 */
     private isOriginAllowed(origin?: string): boolean {
         const allowed = this.settings.allowedOrigins || ['*'];
         if (allowed.includes('*')) return true;
@@ -178,7 +176,7 @@ export class MCPServer {
         return allowed.includes(origin);
     }
 
-    /** Bearer-token gate; disabled when settings.authToken is empty. */
+    /** Bearer 令牌门；settings.authToken 为空时关闭（fork 加固）。 */
     private checkAuth(req: http.IncomingMessage): boolean {
         const token = this.settings.authToken;
         if (!token) return true;
@@ -210,14 +208,14 @@ export class MCPServer {
             return;
         }
 
-        // Reject spoofed Host headers before doing anything else.
+        // 反 DNS-rebinding：先校验 Host 头（fork 加固）
         if (!this.isLocalHost(req.headers.host)) {
             res.writeHead(403);
             res.end(JSON.stringify({ error: 'Forbidden: invalid Host header (possible DNS rebinding)' }));
             return;
         }
 
-        // /mcp and /api/* carry side effects — gate them on origin + optional token.
+        // /mcp 与 /api/* 有副作用 → origin 白名单 + 可选 token 门（fork 加固）
         const isSensitive = pathname === '/mcp' || (pathname?.startsWith('/api/') ?? false);
         if (isSensitive) {
             if (!this.isOriginAllowed(req.headers.origin as string | undefined)) {
@@ -269,7 +267,7 @@ export class MCPServer {
                     message = JSON.parse(body);
                 } catch (parseError: any) {
                     // Try to fix common JSON issues
-                    const fixedBody = this.fixCommonJsonIssues(body);
+                    const fixedBody = fixCommonJsonIssues(body);
                     try {
                         message = JSON.parse(fixedBody);
                         console.log('[MCPServer] Fixed JSON parsing issue');
@@ -280,7 +278,7 @@ export class MCPServer {
                 
                 const response = await this.handleMessage(message);
                 if (response === null) {
-                    // Notification (no id): JSON-RPC forbids a response body.
+                    // 通知消息（无 id）：JSON-RPC 禁止返回响应体（fork 修正）
                     res.writeHead(202);
                     res.end();
                     return;
@@ -302,7 +300,7 @@ export class MCPServer {
         });
     }
 
-    /** Returns a JSON-RPC response object, or null for notifications (id-less messages). */
+    /** 返回 JSON-RPC 响应对象；通知消息（无 id）返回 null（fork 修正）。 */
     private async handleMessage(message: any): Promise<any | null> {
         const { id, method, params } = message;
         const isNotification = id === undefined;
@@ -312,15 +310,16 @@ export class MCPServer {
 
             switch (method) {
                 case 'initialize':
+                    // MCP initialization
                     result = {
-                        // Echo the client's requested protocol version when present.
+                        // 回显客户端请求的协议版本（fork 修正）
                         protocolVersion: (params && params.protocolVersion) || '2024-11-05',
                         capabilities: {
                             tools: {}
                         },
                         serverInfo: {
                             name: 'cocos-mcp-server',
-                            version: '1.4.0'
+                            version: this.getVersion()
                         }
                     };
                     break;
@@ -338,9 +337,9 @@ export class MCPServer {
                     break;
                 case 'notifications/initialized':
                 case 'notifications/cancelled':
-                    return null; // known notifications: no response
+                    return null; // 已知通知：不回响应（fork 修正）
                 default:
-                    if (isNotification) return null; // ignore unknown notifications silently
+                    if (isNotification) return null; // 未知通知静默忽略
                     throw new Error(`Unknown method: ${method}`);
             }
 
@@ -359,23 +358,11 @@ export class MCPServer {
         }
     }
 
-    private fixCommonJsonIssues(jsonStr: string): string {
-        // Conservative only. The previous version globally rewrote single quotes to
-        // double quotes and escaped every control char, which corrupts valid string
-        // content (apostrophes, embedded newlines). Compliant MCP clients send valid
-        // JSON, so we merely strip a BOM and trailing commas as a best-effort fallback.
-        let fixed = jsonStr;
-        if (fixed.charCodeAt(0) === 0xFEFF) fixed = fixed.slice(1);
-        fixed = fixed.replace(/,(\s*[}\]])/g, '$1');
-        return fixed;
-    }
-
     public stop(): Promise<void> {
-        this.clients.clear();
         return new Promise<void>((resolve) => {
             if (this.httpServer) {
                 const srv = this.httpServer;
-                this.httpServer = null; // flip status immediately so a subsequent start() proceeds
+                this.httpServer = null; // 立即翻转状态，后续 start() 可直接进行（fork 修 EADDRINUSE 重启竞态）
                 srv.close(() => {
                     console.log('[MCPServer] HTTP server stopped');
                     resolve();
@@ -389,8 +376,7 @@ export class MCPServer {
     public getStatus(): ServerStatus {
         return {
             running: !!this.httpServer,
-            port: this.settings.port,
-            clients: 0 // HTTP is stateless, no persistent clients
+            port: this.settings.port
         };
     }
 
@@ -421,7 +407,7 @@ export class MCPServer {
                     params = body ? JSON.parse(body) : {};
                 } catch (parseError: any) {
                     // Try to fix JSON issues
-                    const fixedBody = this.fixCommonJsonIssues(body);
+                    const fixedBody = fixCommonJsonIssues(body);
                     try {
                         params = JSON.parse(fixedBody);
                         console.log('[MCPServer] Fixed API JSON parsing issue');
@@ -514,11 +500,8 @@ export class MCPServer {
     public async updateSettings(settings: MCPServerSettings): Promise<void> {
         this.settings = settings;
         if (this.httpServer) {
-            await this.stop();   // wait for the port to be released before rebinding
+            await this.stop();   // 等端口真正释放再重新绑定（fork 修竞态）
             await this.start();
         }
     }
 }
-
-// HTTP transport doesn't need persistent connections
-// MCP over HTTP uses request-response pattern
